@@ -8,19 +8,29 @@
     };
     const slice = [].slice;
 
-    function createElement(tagName) {
+    function nextTick(fn) {
+        window.setTimeout(fn, 1);
+    }
+
+    function createElement(store, tagName) {
         const node = document.createElement(tagName);
-        const api = {
+        const api = Object.freeze({
             $: node,
             prop: function (name, value) {
+                if (/^on/.test(name) && typeof value === "function") {
+                    node[name] = function () {
+                        const result = value.apply(this, arguments);
+                        nextTick(store.invalidate);
+                        return result;
+                    };
+                    return api;
+                }
                 node[name] = value;
                 return api;
             },
-        };
+        });
         return api;
     }
-
-    const subscribers = [];
 
     window.IDOM = Object.freeze({
         createElement: function (tagName, props, children) {
@@ -28,13 +38,10 @@
                 return tagName(props, children);
             }
 
-            return [tagName, props || {}, children];
+            return [tagName, props, children];
         },
-        invalidate: function (path) {
-            console.log("IDOM.invalidate", path);
-        },
-        render: function render(app, rootNode) {
-            console.log("IDOM.render", pretty(app), rootNode);
+        render: function render(app, store, rootNode) {
+            console.log("IDOM.render", pretty(app), "with", pretty(store.state), rootNode);
 
             if (typeof app === "string") {
                 const textNode = document.createTextNode(app);
@@ -43,16 +50,23 @@
             }
 
             const tagName = app[0];
-            const props = app[1] || {};
+            const selectProps = app[1] || function (it) { return it; };
             const children = app[2] || [];
 
-            const el = createElement(tagName);
-            Object.keys(props).forEach(function (key) {
-                el.prop(key, props[key]);
-            });
+            const el = createElement(store, tagName);
+
+            if (Object.keys(selectProps(store.state)).length) {
+                store.subscribe(function (state) {
+                    const props = selectProps(state);
+                    Object.keys(props).forEach(function (key) {
+                        el.prop(key, props[key]);
+                    });
+                });
+            }
+
             if (Array.isArray(children)) {
                 children.forEach(function (child) {
-                    render(child, el.$);
+                    render(child, store, el.$);
                 });
             }
             rootNode.appendChild(el.$);
@@ -67,26 +81,52 @@
 console.log("IDOM", IDOM, IDOM.createElement);
 
 const h = IDOM.createElement;
-const lens = IDOM.lens;
+
+function createStore(initialState) {
+    const _subscriptions = [];
+    const store = Object.defineProperties({}, {
+        invalidate: {
+            value: function () {
+                _subscriptions.forEach(function (fn) {
+                    fn(store.state);
+                });
+            },
+        },
+        state: {
+            value: initialState,
+        },
+        subscribe: {
+            value: function (fn) {
+                _subscriptions.push(fn);
+                fn(store.state);
+            },
+        },
+    });
+    return store;
+}
+
+function select(selector) {
+    return function (props) {
+        return selector(props);
+    };
+}
 
 function App(props, children) {
-    return h("div", { id: props.mainId, onclick: props.onclick }, [
+    return h("div", select(function (state) { return { id: state.mainId, onclick: state.onclick }; }), [
         h("pre", null, [
             "module Main exposing (main)",
         ].concat(children || [])),
     ]);
 }
 
-const state = {
+const app = h(App, null, [
+    h("i", null, ["italics"]),
+]);
+const store = createStore({
     mainId: "main",
     onclick: function () {
         console.log("onclick", arguments);
-        state.mainId = "main2";
-        IDOM.invalidate();
+        store.state.mainId = "main2";
     },
-};
-
-const app = h(App, state, [
-    h("i", null, ["italics"]),
-]);
-IDOM.render(app, document.querySelector("#root"));
+});
+IDOM.render(app, store, document.querySelector("#root"));
